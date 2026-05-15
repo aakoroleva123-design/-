@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <title>Проверка наименований препаратов</title>
+
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+
+<body class="bg-slate-950">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    function PharmaNameChecker() {
+
+      const [query, setQuery] = useState("");
+
+      const [results, setResults] = useState([]);
+
+      const [database, setDatabase] = useState([]);
+
+      const [loadingDatabase, setLoadingDatabase] =
+        useState(true);
+
+      /*
+        =========================================
+        АВТОЗАГРУЗКА БАЗЫ ЕАЭС
+        =========================================
+
+        ВАЖНО:
+
+        Положи рядом с HTML файл:
+
+        eaeu-drugs.json
+
+      */
+
+      useEffect(() => {
+
+        async function loadDatabase() {
+
+          try {
+
+            const response = await fetch(
+              "./eaeu-drugs.json"
+            );
+
+            const data = await response.json();
+
+            setDatabase(data);
+
+            console.log(
+              "База ЕАЭС загружена:",
+              data.length
+            );
+
+          } catch (error) {
+
+            console.error(
+              "Ошибка загрузки базы:",
+              error
+            );
+
+            alert(
+              "Не удалось загрузить eaeu-drugs.json"
+            );
+
+          } finally {
+
+            setLoadingDatabase(false);
+
+          }
+        }
+
+        loadDatabase();
+
+      }, []);
+
+      /*
+        =========================================
+        NORMALIZE
+        =========================================
+      */
+
+      function normalize(word) {
+
+        return word
+          .toLowerCase()
+
+          .replace(/[®™©]/g, "")
+
+          .replace(/\(.*?\)/g, "")
+
+          .replace(
+            /\b\d+\s?(mg|ml|мг|мл)\b/g,
+            ""
+          )
+
+          .replace(/[+/,.-]/g, " ")
+
+          .replace(
+            /\b(forte|plus|extra|xr|sr|long|neo|ultra|max)\b/g,
+            ""
+          )
+
+          .replace(/ph/g, "f")
+          .replace(/x/g, "ks")
+          .replace(/z/g, "s")
+          .replace(/v/g, "w")
+          .replace(/q/g, "k")
+          .replace(/c/g, "k")
+          .replace(/th/g, "t")
+
+          .replace(/ё/g, "е")
+          .replace(/й/g, "и")
+
+          .replace(/\s+/g, " ")
+
+          .trim();
+      }
+
+      /*
+        =========================================
+        PHONETIC NORMALIZE
+        =========================================
+      */
+
+      function phoneticNormalize(word) {
+
+        return normalize(word)
+
+          .replace(
+            /[aeiouyаеёиоуыэюя]/g,
+            ""
+          )
+
+          .replace(/(.)\1+/g, "$1")
+
+          .replace(/ks/g, "x")
+
+          .replace(/tion/g, "shn")
+
+          .replace(/sion/g, "shn");
+      }
+
+      /*
+        =========================================
+        LEVENSHTEIN
+        =========================================
+      */
+
+      function levenshtein(a, b) {
+
+        const matrix = [];
+
+        for (let i = 0; i <= b.length; i++) {
+          matrix[i] = [i];
+        }
+
+        for (let j = 0; j <= a.length; j++) {
+          matrix[0][j] = j;
+        }
+
+        for (let i = 1; i <= b.length; i++) {
+
+          for (let j = 1; j <= a.length; j++) {
+
+            if (
+              b.charAt(i - 1) ===
+              a.charAt(j - 1)
+            ) {
+
+              matrix[i][j] =
+                matrix[i - 1][j - 1];
+
+            } else {
+
+              matrix[i][j] = Math.min(
+                matrix[i - 1][j - 1] + 1,
+                matrix[i][j - 1] + 1,
+                matrix[i - 1][j] + 1
+              );
+            }
+          }
+        }
+
+        return matrix[b.length][a.length];
+      }
+
+      /*
+        =========================================
+        PHONETIC SCORE
+        =========================================
+      */
+
+      function phoneticScore(word1, word2) {
+
+        const a =
+          phoneticNormalize(word1);
+
+        const b =
+          phoneticNormalize(word2);
+
+        if (!a || !b) return 0;
+
+        const maxLen =
+          Math.max(a.length, b.length);
+
+        const distance =
+          levenshtein(a, b);
+
+        return Math.round(
+          ((maxLen - distance) / maxLen) * 100
+        );
+      }
+
+      /*
+        =========================================
+        SIMILARITY
+        =========================================
+      */
+
+      function similarityScore(word1, word2) {
+
+        const queryTokens =
+          normalize(word1)
+            .split(" ")
+            .filter(Boolean);
+
+        const dbTokens =
+          normalize(word2)
+            .split(" ")
+            .filter(Boolean);
+
+        let bestScore = 0;
+
+        let bestPhonetic = 0;
+
+        let bestSpelling = 0;
+
+        queryTokens.forEach((q) => {
+
+          dbTokens.forEach((d) => {
+
+            if (
+              q.length < 3 ||
+              d.length < 3
+            ) {
+              return;
+            }
+
+            const maxLen =
+              Math.max(q.length, d.length);
+
+            const distance =
+              levenshtein(q, d);
+
+            const spelling = Math.round(
+              ((maxLen - distance) / maxLen) * 100
+            );
+
+            const phonetic =
+              phoneticScore(q, d);
+
+            const prefix =
+              q.slice(0, 4) === d.slice(0, 4)
+                ? 100
+                : 0;
+
+            const suffix =
+              q.slice(-3) === d.slice(-3)
+                ? 100
+                : 0;
+
+            const contains =
+              d.includes(q) ||
+              q.includes(d)
+                ? 100
+                : 0;
+
+            const total = Math.round(
+
+              spelling * 0.45 +
+
+              phonetic * 0.30 +
+
+              prefix * 0.10 +
+
+              suffix * 0.05 +
+
+              contains * 0.10
+            );
+
+            if (total > bestScore) {
+
+              bestScore = total;
+
+              bestPhonetic = phonetic;
+
+              bestSpelling = spelling;
+            }
+          });
+        });
+
+        return {
+
+          total: bestScore,
+
+          phonetic: bestPhonetic,
+
+          spelling: bestSpelling
+        };
+      }
+
+      /*
+        =========================================
+        CLASSIFY
+        =========================================
+      */
+
+      function classify(score) {
+
+        if (score >= 85) {
+
+          return {
+            label: "Опасно похоже",
+            color: "bg-red-500",
+            icon: "🚨"
+          };
+        }
+
+        if (score >= 65) {
+
+          return {
+            label: "Умеренно похоже",
+            color: "bg-yellow-400",
+            icon: "⚠️"
+          };
+        }
+
+        return {
+          label: "Слабое совпадение",
+          color: "bg-slate-400",
+          icon: "ℹ️"
+        };
+      }
+
+      /*
+        =========================================
+        SEARCH
+        =========================================
+      */
+
+      useEffect(() => {
+
+        if (!query.trim()) {
+
+          setResults([]);
+
+          return;
+        }
+
+        const scored = database
+
+          .map((drug) => {
+
+            const similarity =
+              similarityScore(query, drug);
+
+            return {
+
+              name: drug,
+
+              score: similarity.total,
+
+              phonetic: similarity.phonetic,
+
+              spelling: similarity.spelling,
+
+              ...classify(similarity.total)
+            };
+          })
+
+          .filter(
+            (item) => item.score >= 35
+          )
+
+          .sort(
+            (a, b) => b.score - a.score
+          )
+
+          .slice(0, 20);
+
+        setResults(scored);
+
+      }, [query, database]);
+
+      /*
+        =========================================
+        LOCAL FILE UPLOAD
+        =========================================
+      */
+
+      async function handleFileUpload(event) {
+
+        const file = event.target.files[0];
+
+        if (!file) return;
+
+        try {
+
+          const text = await file.text();
+
+          const names = text
+            .split(/\r?\n/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+
+          setDatabase((prev) => [
+
+            ...new Set([
+              ...prev,
+              ...names
+            ])
+          ]);
+
+          alert(
+            "Добавлено препаратов: " +
+            names.length
+          );
+
+        } catch (error) {
+
+          console.error(error);
+
+          alert(
+            "Ошибка загрузки файла"
+          );
+        }
+      }
+
+      return (
+
+        <div className="min-h-screen text-white p-6 bg-gradient-to-br from-green-400 via-emerald-600 to-black">
+
+          <div className="max-w-6xl mx-auto">
+
+            <div className="text-center mb-10">
+
+              <h1 className="text-5xl font-bold mb-4 text-green-950">
+                Проверка наименований препаратов
+              </h1>
+
+              <p className="text-slate-100 text-lg">
+                Орфографический и фонетический анализ
+              </p>
+
+              <div className="mt-4 text-sm text-slate-200">
+
+                {loadingDatabase
+                  ? "Загрузка базы ЕАЭС..."
+                  : `База загружена: ${database.length} препаратов`
+                }
+
+              </div>
+
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-3xl p-6 mb-8">
+
+              <div className="flex flex-col md:flex-row gap-4">
+
+                <input
+                  type="text"
+
+                  value={query}
+
+                  onChange={(e) =>
+                    setQuery(e.target.value)
+                  }
+
+                  placeholder="Введите название препарата"
+
+                  className="flex-1 bg-slate-900 border border-slate-700 rounded-2xl px-5 py-4 text-lg outline-none focus:border-cyan-400"
+                />
+
+                <label className="bg-pink-800 hover:bg-lime-600 transition text-white px-6 py-4 rounded-2xl font-semibold cursor-pointer text-center">
+
+                  Добавить свою базу
+
+                  <input
+                    type="file"
+
+                    accept=".txt,.csv"
+
+                    onChange={handleFileUpload}
+
+                    className="hidden"
+                  />
+                </label>
+
+              </div>
+
+            </div>
+
+            <div className="space-y-4">
+
+              {results.length === 0 &&
+                query.trim() !== "" &&
+                !loadingDatabase && (
+
+                  <div className="bg-white/5 border border-white/10 rounded-3xl p-8 text-center text-slate-200">
+
+                    Совпадений не найдено
+
+                  </div>
+                )}
+
+              {results.map((item, index) => (
+
+                <div
+                  key={index}
+
+                  className="bg-white/5 border border-white/10 rounded-3xl p-6 hover:border-cyan-500/40 transition"
+                >
+
+                  <div className="flex justify-between items-center flex-wrap gap-6">
+
+                    <div>
+
+                      <div className="text-3xl font-bold mb-4">
+
+                        {item.name}
+
+                      </div>
+
+                      <div
+                        className={`${item.color} inline-flex items-center gap-2 px-4 py-2 rounded-full text-black font-bold`}
+                      >
+
+                        <span>{item.icon}</span>
+
+                        <span>{item.label}</span>
+
+                      </div>
+
+                    </div>
+
+                    <div className="flex gap-8 flex-wrap">
+
+                      <div className="text-center">
+
+                        <div className="text-slate-200 text-sm mb-1">
+                          Total
+                        </div>
+
+                        <div className="text-5xl font-bold text-cyan-300">
+                          {item.score}%
+                        </div>
+
+                      </div>
+
+                      <div className="text-center">
+
+                        <div className="text-slate-200 text-sm mb-1">
+                          Phonetic
+                        </div>
+
+                        <div className="text-4xl font-bold text-pink-300">
+                          {item.phonetic}%
+                        </div>
+
+                      </div>
+
+                      <div className="text-center">
+
+                        <div className="text-slate-200 text-sm mb-1">
+                          Spelling
+                        </div>
+
+                        <div className="text-4xl font-bold text-emerald-300">
+                          {item.spelling}%
+                        </div>
+
+                      </div>
+
+                    </div>
+
+                  </div>
+
+                </div>
+
+              ))}
+
+            </div>
+
+          </div>
+
+        </div>
+      );
+    }
+
+    const root =
+      ReactDOM.createRoot(
+        document.getElementById("root")
+      );
+
+    root.render(
+      <PharmaNameChecker />
+    );
+
+  </script>
+</body>
+</html>
